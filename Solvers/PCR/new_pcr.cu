@@ -2,7 +2,7 @@
 #include <stdlib.h>
 #include <cuda_runtime.h>
 
-#define N 10 // matrix size
+#define N 3 // matrix size
 
 __global__ void list_print(int nmax, float * in) {
     int i = blockIdx.x*blockDim.x + threadIdx.x;
@@ -128,7 +128,7 @@ __global__ void Solve_Kernel(
     if ((N & 1) && idx_row == int (N/2))   {
         xlist[idx_row] = dlist[idx_row]/blist[idx_row];
     }
-    else if ((N & 2) && (idx_row == int (N/2) || idx_row == int (N/2) - 1)) {
+    else if ((N & 3) == 2 && (idx_row == int (N/2) || idx_row == int (N/2) - 1)) {
         xlist[idx_row] = dlist[idx_row]/blist[idx_row];
     }
     // When N is even, all reductions will leave us with 2 by 2 matrices
@@ -140,12 +140,6 @@ __global__ void Solve_Kernel(
             solve_2by2_y(blist[idx_row - stride], clist[idx_row - stride], dlist[idx_row - stride], alist[idx_row], blist[idx_row], dlist[idx_row] , &xlist[idx_row]);
         }
     }
-    
-
-    // When N is odd, we have one row left out
-    
-
-
 }
 
 __host__
@@ -188,12 +182,13 @@ int main() {
     float h_x[N];
     */
 
+    /*
     float h_a[] = {0, -1, -1, -1, -1, -1, -1, -1, -1, -1};
     float h_b[] = {2, 2, 2, 1, 3, 5, 7, 3, 4, 6};
     float h_c[] = {-1, -1, -1, -1, -1, -1, -1, -1, -1, 0};
     float h_d[] = {0, 0, 1, 0, 1, 5, 2, 4, 9, 5};
     float h_x[N];
-
+    */
     
     
     
@@ -206,13 +201,13 @@ int main() {
     */
     
     
-    /*
+
     float h_a[] = {0, -1, -1};
     float h_b[] = {2, 2, 2};
     float h_c[] = {-1, -1, 0};
     float h_d[] = {0, 0, 1};
     float h_x[N];
-    */
+
 
     /*
 
