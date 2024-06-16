@@ -1,67 +1,34 @@
 #include <stdio.h>
-#include <stdlib.h>
 #include <cuda_runtime.h>
-#include <stdint.h>
+#include <stdlib.h>
+#include <time.h>
 
-__device__
-void solve_2by2_x(float a1, float b1, float c1, float a2, float b2, float c2, float *x) {
-    double det = a1 * b2 - a2 * b1;
 
-    if (det == 0) {
-        //skip
-    } else {
-        // Calculate the solutions using Cramer's rule
-        *x = (c1 * b2 - c2 * b1) / det;
+__host__
+void generate_tridiagonal_system(int n, float a[], float b[], float c[], float d[]) {
+    // Seed the random number generator for variability in results
+    // srand(time(NULL));
+
+    for (int i = 0; i < n; i++) {
+        // Generate random values for a, b, c, and d
+        a[i] = (i > 0) ? rand() % 100 + 1 : 0;  // Upper diagonal (no entry at i=0)
+        c[i] = (i < n-1) ? rand() % 100 + 1 : 0;  // Lower diagonal (no entry at i=n-1)
+        b[i] = a[i] + c[i] + rand() % 100 + 50;  // Ensure diagonal dominance
+        d[i] = rand() % 100 + 1;
     }
 }
 
-__device__
-void solve_2by2_y(float a1, float b1, float c1, float a2, float b2, float c2, float *y) {
-    double det = a1 * b2 - a2 * b1;
-
-    if (det == 0) {
-        //skip
-    } else {
-        *y = (a1 * c2 - a2 * c1) / det;
-    }
+__global__ void list_print(int nmax, float * in) {
+    int i = blockIdx.x*blockDim.x + threadIdx.x;
+    printf("Thread %i shows %f \n", i, in[i]);
 }
 
-__device__
-uint32_t flp2 (uint32_t x)
-{
-    x = x | (x >> 1);
-    x = x | (x >> 2);
-    x = x | (x >> 4);
-    x = x | (x >> 8);
-    x = x | (x >> 16);
-    return x - (x >> 1);
-}
-
-__device__
-void printall(float *a, float *b, float *c, float *d, int n) {
-    printf("\na: \n");
-    for (int i = 0; i < n; i++) {
-        printf("%f, ", a[i]);
-    }
-    printf("\nb: \n");
-    for (int i = 0; i < n; i++) {
-        printf("%f, ", b[i]);
-    }
-    printf("\nc: \n");
-    for (int i = 0; i < n; i++) {
-        printf("%f, ", c[i]);
-    }
-    printf("\nd: \n");
-    for (int i = 0; i < n; i++) {
-        printf("%f, ", d[i]);
-    }
-}
 
 __global__ void Solve_Kernel(
-    float * alist, float * blist, float * clist, float * dlist, float * xlist, int iter_max, int DMax, int n) {
+    float * alist, float * blist, float * clist, float * dlist, float * xlist,
+    int iter_max, int DMax) {
 
     int idx_row = blockIdx.x*blockDim.x + threadIdx.x;
-    if (idx_row >= n) return;
     int row_max = DMax - 1;
 
     int stride = 1;
@@ -70,15 +37,15 @@ __global__ void Solve_Kernel(
     float a1, b1, c1, d1;
     float k01, k21, c01, a21, d01, d21;
 
-    bool next_or_not = true;
+    bool next_or_ot = true;
+    int accum;
 
-    float i_end = log2f(n);
-    float closest_power = (float) (int) i_end;
-    
-    for (int i = 0; i < i_end - 1; ++i) {
-        if ( next_or_not ) { 
+    for (int iter = 0; iter < iter_max; iter++) {
 
-            next_stride = stride << 1;
+        if ( next_or_ot ) {
+
+            next_stride = stride<<1;
+
             // 1    for updating 'a'
             if ((idx_row - stride)<0) {
             // 1.1  if it is the 'first' line
@@ -123,121 +90,43 @@ __global__ void Solve_Kernel(
             // 4   for updating 'd'
             d1 = dlist[idx_row] - d01 - d21;
 
-            //stride = next_stride;
+            stride = next_stride;
 
             //Determine if this line has reached the bi-set
-            //int pos = idx_row-2*stride;
-            //accum = 0;
-            if ((idx_row - stride) < 0 || (idx_row + stride) >= n) {
-                next_or_not = false;
-                
-                if ((idx_row - 2*stride) >=0 || (idx_row + 2*stride) < n) {
-                    next_or_not = true;
-                }
+            int pos = idx_row-2*stride;
+            accum = 0;
+            for ( size_t iter = 0; iter<5; iter++ ) {
+                if (pos >=0 && pos < DMax) accum++;
+                pos+=stride;
             }
-            if (next_or_not) stride = next_stride;
-            
+            if (accum < 3) {
+                next_or_ot = false;//Turn of for ever
+            }
+
         }
 
-        // print
         __syncthreads();
-
 
         alist[idx_row] = a1;
         blist[idx_row] = b1;
         clist[idx_row] = c1;
         dlist[idx_row] = d1;
+
     }
 
-    // Solve!
-
-    // Solve for middle sector in the case of non power of 2 rows.
-    if (idx_row >= (n - closest_power) && idx_row < (closest_power))   {
-        xlist[idx_row] = dlist[idx_row]/blist[idx_row];
+    if ( accum==1 ) {
+        xlist[idx_row] = dlist[idx_row] / blist[idx_row];
+    } else if ( (idx_row-stride)<0 ) {
+        int i = idx_row; int k = idx_row+stride;
+        float f = clist[i]/blist[k];
+        xlist[i] = (dlist[i]-dlist[k]*f)/(blist[i]-alist[k]*f);
+    } else {
+        int i = idx_row - stride;
+        int k = idx_row;
+        float f = alist[k]/blist[i];
+        xlist[k] = (dlist[k]-dlist[i]*f)/(blist[k]-clist[i]*f);
     }
-    // Solve 2 by 2
-    else {
-        // Fill in upper row
-        if (idx_row <  n/2) {
-            solve_2by2_x(blist[idx_row], clist[idx_row], dlist[idx_row], alist[idx_row + stride], blist[idx_row + stride], dlist[idx_row + stride] , &xlist[idx_row]);
-        }
-        // lower row
-        else {
-            solve_2by2_y(blist[idx_row - stride], clist[idx_row - stride], dlist[idx_row - stride], alist[idx_row], blist[idx_row], dlist[idx_row] , &xlist[idx_row]);
-        }
-    }
-}
 
-
-__host__
-int sample_main() {
-    int n = 3;
-    float h_a[] = {0, -1, -1};
-    float h_b[] = {2, 2, 2};
-    float h_c[] = {-1, -1, 0};
-    float h_d[] = {0, 0, 1};
-    float h_x[n];
-
-
-    // Device arrays
-    float *d_a, *d_b, *d_c, *d_d, *d_x;
-
-    // Allocate memory on the device
-    cudaMalloc(&d_a, n * sizeof(float));
-    cudaMalloc(&d_b, n * sizeof(float));
-    cudaMalloc(&d_c, n * sizeof(float));
-    cudaMalloc(&d_d, n * sizeof(float));
-    cudaMalloc(&d_x, n * sizeof(float));
-
-    // Copy data from host to device
-    cudaMemcpy(d_a, h_a, n * sizeof(float), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_b, h_b, n * sizeof(float), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_c, h_c, n * sizeof(float), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_d, h_d, n * sizeof(float), cudaMemcpyHostToDevice);
-
-    // Define kernel launch configuration
-    int threadsPerBlock = 512;
-    int blocks = 3;
-
-    // Launch the kernel
-    Solve_Kernel<<<blocks, threadsPerBlock>>>(d_a, d_b, d_c, d_d, d_x, 10, n, n);
-
-    // Copy results back to host
-    cudaMemcpy(h_a, d_a, n * sizeof(float), cudaMemcpyDeviceToHost);
-    cudaMemcpy(h_b, d_b, n * sizeof(float), cudaMemcpyDeviceToHost);
-    cudaMemcpy(h_c, d_c, n * sizeof(float), cudaMemcpyDeviceToHost);
-    cudaMemcpy(h_d, d_d, n * sizeof(float), cudaMemcpyDeviceToHost);
-    cudaMemcpy(h_x, d_x, n * sizeof(float), cudaMemcpyDeviceToHost);
-
-    // Free device memory
-    cudaFree(d_a);
-    cudaFree(d_b);
-    cudaFree(d_c);
-    cudaFree(d_d);
-    cudaFree(d_x);
-
-    return 0;
-}
-
-__host__
-void generate_tridiagonal_system(int n, float a[], float b[], float c[], float d[]) {
-    // Seed the random number generator for variability in results
-    // srand(time(NULL));
-
-    for (int i = 0; i < n; i++) {
-        // Generate random values for a, b, c, and d
-        a[i] = (i > 0) ? rand() % 100 + 1 : 0;  // Upper diagonal (no entry at i=0)
-        c[i] = (i < n-1) ? rand() % 100 + 1 : 0;  // Lower diagonal (no entry at i=n-1)
-        b[i] = a[i] + c[i] + rand() % 100 + 50;  // Ensure diagonal dominance
-        d[i] = rand() % 100 + 1;
-    }
-}
-
-__host__
-void print_to_fp(int n, float diag[], FILE *fp) {
-    for (int i = 0; i < n; i++) {
-        fprintf(fp, "%f, ", diag[i]);
-    }
 }
 
 __host__
@@ -287,7 +176,7 @@ int main() {
             cudaMemcpy(d_x, h_x, n * sizeof(float), cudaMemcpyHostToDevice);
 
             // Define kernel launch configuration
-            int threadsPerBlock = 512;
+            int threadsPerBlock = 256;
             int blocks = (n + threadsPerBlock - 1) / threadsPerBlock;
 
             // Setting up timing
@@ -297,8 +186,7 @@ int main() {
 
             // Launch the kernel
             cudaEventRecord(start);
-            // Launch the kernel
-            Solve_Kernel<<<blocks, threadsPerBlock>>>(d_a, d_b, d_c, d_d, d_x, 10, n, n);
+            Solve_Kernel<<<blocks, threadsPerBlock>>>(d_a, d_b, d_c, d_d, d_x, 20, n);
 
             cudaEventRecord(stop);
 
@@ -338,5 +226,3 @@ int main() {
     fclose(fp);
     return 0;
 }
-
-
