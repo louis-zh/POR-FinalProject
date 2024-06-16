@@ -61,7 +61,11 @@ __global__ void Solve_Kernel(
     float * alist, float * blist, float * clist, float * dlist, float * xlist, int iter_max, int DMax, int n) {
 
     int idx_row = blockIdx.x*blockDim.x + threadIdx.x;
-    if (idx_row >= n) return;
+    //printf("block id is: %d, block dim is: %d\n", blockIdx.x, blockDim.x);
+    if (idx_row >= n) {
+        //printf("idx_row is: %d\n", idx_row);
+        return;
+    }
     int row_max = DMax - 1;
 
     int stride = 1;
@@ -70,13 +74,14 @@ __global__ void Solve_Kernel(
     float a1, b1, c1, d1;
     float k01, k21, c01, a21, d01, d21;
 
-    bool next_or_not = true;
+    bool next_or_ot = true;
 
     float i_end = log2f(n);
-    float closest_power = (float) (int) i_end;
+    uint32_t closest_power = flp2(n);
     
     for (int i = 0; i < i_end - 1; ++i) {
-        if ( next_or_not ) { 
+        //printf("iteration : %d, thread is : %d, next or not is: %d, stride is: %d\n", i, idx_row, next_or_ot, stride);
+        if ( next_or_ot ) { 
 
             next_stride = stride << 1;
             // 1    for updating 'a'
@@ -129,13 +134,14 @@ __global__ void Solve_Kernel(
             //int pos = idx_row-2*stride;
             //accum = 0;
             if ((idx_row - stride) < 0 || (idx_row + stride) >= n) {
-                next_or_not = false;
+                next_or_ot = false;
                 
                 if ((idx_row - 2*stride) >=0 || (idx_row + 2*stride) < n) {
-                    next_or_not = true;
+                    next_or_ot = true;
                 }
             }
-            if (next_or_not) stride = next_stride;
+            //printf("continue? : %d\n", next_or_ot);
+            if (next_or_ot) stride = next_stride;
             
         }
 
@@ -151,18 +157,26 @@ __global__ void Solve_Kernel(
 
     // Solve!
 
-    // Solve for middle sector in the case of non power of 2 rows.
+    /*
+    if (idx_row == 0) {
+        printall(alist, blist, clist, dlist, n);
+    }
+    */
+
+    // When N is odd, we have one row left out
     if (idx_row >= (n - closest_power) && idx_row < (closest_power))   {
+        //printf("Filled in one row with case 1\n This index is : %d\n", idx_row);
         xlist[idx_row] = dlist[idx_row]/blist[idx_row];
     }
-    // Solve 2 by 2
+    // When N is even, all reductions will leave us with 2 by 2 matrices
     else {
-        // Fill in upper row
         if (idx_row <  n/2) {
+            //printf("Filled in one row with case 3\n This index is : %d, with stride: %d\n. Inputs to solver are: b[idx]: %f, c[idx]: %f, d[idx]: %f, a[idx+stride]: %f, b[idx+stride]: %f, d[idx+stride]: %f\n", idx_row, stride, blist[idx_row], clist[idx_row], dlist[idx_row], alist[idx_row + stride], blist[idx_row + stride], dlist[idx_row + stride]);
+            
             solve_2by2_x(blist[idx_row], clist[idx_row], dlist[idx_row], alist[idx_row + stride], blist[idx_row + stride], dlist[idx_row + stride] , &xlist[idx_row]);
         }
-        // lower row
         else {
+            //printf("Filled in one row with case 4\n This index is : %d, with stride: %d\n. Inputs to solver are: b[idx-stride]: %f, c[idx-stride]: %f, d[idx-stride]: %f, a[idx]: %f, b[idx]: %f, d[idx]: %f\n", idx_row, stride, blist[idx_row - stride], clist[idx_row - stride], dlist[idx_row - stride], alist[idx_row], blist[idx_row], dlist[idx_row]);
             solve_2by2_y(blist[idx_row - stride], clist[idx_row - stride], dlist[idx_row - stride], alist[idx_row], blist[idx_row], dlist[idx_row] , &xlist[idx_row]);
         }
     }
@@ -170,7 +184,7 @@ __global__ void Solve_Kernel(
 
 
 __host__
-int sample_main() {
+int old_main() {
     int n = 3;
     float h_a[] = {0, -1, -1};
     float h_b[] = {2, 2, 2};
@@ -209,6 +223,39 @@ int sample_main() {
     cudaMemcpy(h_d, d_d, n * sizeof(float), cudaMemcpyDeviceToHost);
     cudaMemcpy(h_x, d_x, n * sizeof(float), cudaMemcpyDeviceToHost);
 
+    /*
+    printf("\n\nafter computation: \n\n");
+
+     // Output the results
+    printf("\na vector x:\n");
+    for (int i = 0; i < n; i++) {
+        printf("%f ", h_a[i]);
+    }
+     // Output the results
+    printf("\nb vector x:\n");
+    for (int i = 0; i < n; i++) {
+        printf("%f ", h_b[i]);
+    }
+     // Output the results
+    printf("\nc vector x:\n");
+    for (int i = 0; i < n; i++) {
+        printf("%f ", h_c[i]);
+    }
+     // Output the results
+    printf("\nd vector x:\n");
+    for (int i = 0; i < n; i++) {
+        printf("%f ", h_d[i]);
+    }
+
+    // Output the results
+    printf("\nSolution vector x:\n");
+    for (int i = 0; i < n; i++) {
+        printf("%f ", h_x[i]);
+    }
+
+    printf("\n");
+    */
+
     // Free device memory
     cudaFree(d_a);
     cudaFree(d_b);
@@ -239,6 +286,130 @@ void print_to_fp(int n, float diag[], FILE *fp) {
         fprintf(fp, "%f, ", diag[i]);
     }
 }
+
+__host__
+int test_main() {
+        // Open a CSV file to save the execution times
+    FILE *fp = fopen("execution_times.csv", "w");
+    if (fp == NULL) {
+        fprintf(stderr, "Failed to open file for writing.\n");
+        return -1;
+    }
+    fprintf(fp, "System Size,Execution Time (ms)\n"); // Write the CSV header
+
+    int sizes[] = {1025};
+    int num_sizes = sizeof(sizes) / sizeof(sizes[0]);  // Number of different system sizes
+
+    int num_systems = 0;
+    for (int idx = 0; idx < num_sizes; idx++) {
+        int n = sizes[idx];  // System size for this iteration
+        printf("System size: %d\n", n);
+        srand(time(NULL));
+        float totaltime = 0;
+        for (int i = 0; i <= num_systems; i++) {
+            float *h_a = (float *) malloc(n * sizeof(float));  // Upper diagonal
+            float *h_b = (float *) malloc(n * sizeof(float));  // Main diagonal
+            float *h_c = (float *) malloc(n * sizeof(float));  // Lower diagonal
+            float *h_d = (float *) malloc(n * sizeof(float));  // Right-hand side vector
+            float h_x[n];
+
+            generate_tridiagonal_system(n, h_a, h_b, h_c, h_d);
+            fprintf(fp, "Diagonal A: \n");
+            print_to_fp(n, h_a, fp);
+            fprintf(fp, "\n");
+            fprintf(fp, "Diagonal B: \n");
+            print_to_fp(n, h_b, fp);
+            fprintf(fp, "\n");
+            fprintf(fp, "Diagonal C: \n");
+            print_to_fp(n, h_c, fp);
+            fprintf(fp, "\n");
+            fprintf(fp, "Diagonal D: \n");
+            print_to_fp(n, h_d, fp);
+            fprintf(fp, "\n");
+
+            // Device arrays
+            float *d_a, *d_b, *d_c, *d_d, *d_x;
+
+            // Allocate memory on the device
+            cudaMalloc(&d_a, n * sizeof(float));
+            cudaMalloc(&d_b, n * sizeof(float));
+            cudaMalloc(&d_c, n * sizeof(float));
+            cudaMalloc(&d_d, n * sizeof(float));
+            cudaMalloc(&d_x, n * sizeof(float));
+
+            // Copy data from host to device
+            cudaMemcpy(d_a, h_a, n * sizeof(float), cudaMemcpyHostToDevice);
+            cudaMemcpy(d_b, h_b, n * sizeof(float), cudaMemcpyHostToDevice);
+            cudaMemcpy(d_c, h_c, n * sizeof(float), cudaMemcpyHostToDevice);
+            cudaMemcpy(d_d, h_d, n * sizeof(float), cudaMemcpyHostToDevice);
+            cudaMemcpy(d_x, h_x, n * sizeof(float), cudaMemcpyHostToDevice);
+
+            // Define kernel launch configuration
+            int threadsPerBlock = 512;
+            int blocks = 3;
+
+            // Setting up timing
+            cudaEvent_t start, stop;
+            cudaEventCreate(&start);
+            cudaEventCreate(&stop);
+
+            // Launch the kernel
+            cudaEventRecord(start);
+            // Launch the kernel
+            Solve_Kernel<<<blocks, threadsPerBlock>>>(d_a, d_b, d_c, d_d, d_x, 30, n, n);
+
+            cudaEventRecord(stop);
+
+            cudaEventSynchronize(stop);
+            float milliseconds = 0;
+            cudaEventElapsedTime(&milliseconds, start, stop);
+            //printf("Execution time: %f milliseconds\n", milliseconds);
+            //fprintf(fp, "Execution time for system %d: %f milliseconds\n", i, milliseconds);
+            if(i != 0) {
+                totaltime += milliseconds;
+            }
+
+            // Copy results back to host
+            cudaMemcpy(h_x, d_x, n * sizeof(float), cudaMemcpyDeviceToHost);
+
+            // Output the results
+            /*
+            printf("Solution vector x:\n");
+            fprintf(fp, "Solution vector for system %d:\n", i);
+            for (int i = 0; i < n; i++) {
+                printf("%f, ", h_x[i]);
+                fprintf(fp, "%f, ", h_x[i]);
+            }
+
+            printf("\n\n");
+            fprintf(fp, "\n\n");      
+            */      
+
+            // Free device memory
+            cudaFree(d_a);
+            cudaFree(d_b);
+            cudaFree(d_c);
+            cudaFree(d_d);
+            cudaFree(d_x);
+
+            free(h_a);
+            free(h_b);
+            free(h_c);
+            free(h_d);
+
+            // Destroy the events
+            cudaEventDestroy(start);
+            cudaEventDestroy(stop);
+        }
+
+        printf("Average runtime: %f\n", totaltime/num_systems);
+        fprintf(fp,"%d,%f\n", n,totaltime/num_systems);
+    }
+
+    fclose(fp);
+    return 0;
+}
+
 
 __host__
 int main() {
@@ -313,6 +484,21 @@ int main() {
 
             // Copy results back to host
             cudaMemcpy(h_x, d_x, n * sizeof(float), cudaMemcpyDeviceToHost);
+
+            // Output the results
+            
+            /*
+            printf("Solution vector x:\n");
+            fprintf(fp, "Solution vector for system %d:\n", i);
+            for (int i = 0; i < n; i++) {
+                printf("%f, ", h_x[i]);
+                fprintf(fp, "%f ", h_x[i]);
+            }
+
+            printf("\n\n");
+            fprintf(fp, "\n\n");
+            */
+            
 
             // Free device memory
             cudaFree(d_a);
